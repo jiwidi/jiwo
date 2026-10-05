@@ -1,0 +1,86 @@
+[project]
+name = "jiwo"
+version = "0.1.0"
+description = "Decision models that return a probability for every option of typed questions in one forward pass"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = "MIT"
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Typing :: Typed",
+]
+dependencies = [
+  "torch==2.14.0",
+  "transformers==5.17.0",
+  "safetensors==0.8.0",
+  "huggingface-hub==1.31.0",
+  "fastapi==0.141.1",
+  "uvicorn==0.52.4",
+]
+
+[project.optional-dependencies]
+# Fast kernels for Qwen3.5 linear attention on NVIDIA GPUs. Without them transformers uses slow code.
+cuda = ["flash-linear-attention==0.5.2", "kernels==0.16.1"]
+# Load a checkpoint that holds a LoRA adapter. Published models hold full weights and do not need it.
+lora = ["peft==0.21.2"]
+# The in-process engine for the Decision Index kit (jiwo.index_engine). The kit is not on PyPI (see the README).
+index = ["decision-index==0.2.1"]
+
+[project.scripts]
+jiwo = "jiwo.cli:main"
+
+[project.urls]
+Repository = "https://github.com/jiwidi/jiwo"
+Issues = "https://github.com/jiwidi/jiwo/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jiwo"]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.uv.sources]
+decision-index = { git = "https://github.com/apolinario/decision-index", rev = "87d4650b42b377c0291a89c1f1a879f9b31082bf" }
+
+[dependency-groups]
+dev = [
+  "jiwo[lora,index]",
+  "httpx==0.28.1",
+  "pytest==9.0.3",
+  "pytest-cov==7.1.0",
+  "mypy==2.3.1",
+  "ruff==0.15.21",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore:Using `httpx` with `starlette.testclient` is deprecated"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "S"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S311"]
+
+[tool.mypy]
+files = ["src/jiwo"]
+python_version = "3.12"
+strict = true
+cache_dir = ".cache/mypy"
+ignore_missing_imports = true
+untyped_calls_exclude = ["transformers", "torch", "safetensors", "huggingface_hub"]

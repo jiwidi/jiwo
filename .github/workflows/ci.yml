@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6
+        with:
+          version: "0.11.8"
+          enable-cache: true
+      - name: Install the locked dependencies
+        run: uv sync --locked
+      - name: Ruff
+        run: uv run ruff check . && uv run ruff format --check .
+      - name: mypy
+        run: uv run mypy
+      - name: Download the tiny public test model
+        run: uv run hf download trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration
+      - name: Tests
+        run: uv run pytest -q
+        env:
+          HF_HUB_OFFLINE: "1"

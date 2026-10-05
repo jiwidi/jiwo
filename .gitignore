@@ -1,0 +1,37 @@
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.cache/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Local data, runs and weights
+/data/
+/runs/
+/checkpoints/
+/logs/
+*.safetensors
+*.pt
+*.bin
+*.npy
+*.npz
+*.tmp
+
+# OS
+.DS_Store
+
+# Test coverage data
+.coverage
+.coverage.*
+htmlcov/
