@@ -8,35 +8,23 @@ project. TypeSafe does not endorse it.
 
 ## Models
 
-On the [Decision Index](https://github.com/apolinario/decision-index), jiwo-0.8b has the highest score of all models
-under 1B parameters. jiwo-4b is first in the 3–6B class of the live board, and second when open submissions are
-included.
+Both models are on the official [Decision Index](https://huggingface.co/spaces/multimodalart/jev-decision-index)
+board. Its Full score combines the public benchmarks (20%) with private tests that the board maintainers run (80%).
 
-| Model | Base | Parameters | Decision Index 0.2.1 | Live board | Board and open submissions¹ | Licence |
-|---|---|---:|---:|---|---|---|
-| [jiwo-0.8b](https://huggingface.co/eljiwo/jiwo-0.8b) | [Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B) | 0.75B | **28.00** | 1st of 23 (under 1B) | 1st of 33 (under 1B) | Apache-2.0 |
-| [jiwo-4b](https://huggingface.co/eljiwo/jiwo-4b) | [Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B) | 4.2B | **44.97** | 1st of 18 (3–6B) | 2nd of 27 (3–6B) | Apache-2.0 |
+| Model | Base | Parameters | Version | Decision Index 0.3 | Board rank in its class | Licence |
+|---|---|---:|---|---|---|---|
+| [jiwo-0.8b](https://huggingface.co/eljiwo/jiwo-0.8b) | [Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B) | 0.75B | v1 | **Full 24.32** (public 28.72) | **1st of 27** under 1B | Apache-2.0 |
+| [jiwo-4b](https://huggingface.co/eljiwo/jiwo-4b) | [Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B) | 4.2B | v2 | public **46.06**, Full pending | v1: 3rd of 26 in 3–6B (Full 42.86) | Apache-2.0 |
 
-Against the untrained base model and the best other fine-tune of the same base model:
+The board ranks come from the board of 2026-10-07. jiwo-4b v2 (2026-10-09) uses the same recipe as v1 with a larger
+and more varied training mix. It scores 46.06 on the public part of 0.3 (v1: 45.76), and 67.8% on three public
+datasets that no version trained on (v1: 66.3%). Load v1 with `revision="v1"`, for example
+`DecisionModel.from_pretrained("eljiwo/jiwo-4b", revision="v1")`.
 
-| Model | Untrained base² | Best other on the live board | Best other including open submissions¹ |
-|---|---|---|---|
-| jiwo-0.8b (28.00) | Qwen3.5-0.8B, 6.99: **+21.0 points** | JPT-0.8B, 19.22: **+45.7%** | Sifr 0.8B v3.1, 26.88: **+4.2%** |
-| jiwo-4b (44.97) | Qwen3.5-4B, 29.20: **+15.8 points** | JPT-4B, 43.04: **+4.5%** | ezjev-4b-s2, 51.15: −12.1% |
+Against the untrained base model on Decision Index 0.2.1, with the same server and calibration: jiwo-0.8b scores
+28.00 (Qwen3.5-0.8B: 6.99) and jiwo-4b v2 scores 45.08 (Qwen3.5-4B: 29.20).
 
-¹ Complete runs in open pull requests (as of 2026-10-04) with a readable `scores.json` and a median latency under
-1,000 ms, the limit of the board. The board's smallest class is 1.3B parameters or less. In that class, one open
-submission scores higher than jiwo-0.8b: EXAONE-4.0-1.2B-JEV v0.3 (1.28B parameters, 30.29). One slower Qwen3.5-4B
-submission also scores higher than jiwo-4b: Wald-Q4B v1.1 (54.59, median 2,360 ms).
-
-² The untrained base model, run through the same server on the full suite, with its answer temperatures fitted on
-the same calibration data as jiwo.
-
-![Decision Index 0.2.1 by size class](assets/decision-index.svg)
-
-The scores come from complete runs of the suite (150,317 requests per model), served by `jiwo serve`. The board
-maintainers did not verify them yet. The board ranks use the live board of 2026-09-28. The training data is mostly
-English. Other languages are not evaluated.
+The training data is mostly English. Other languages are not evaluated.
 
 ## Install
 
