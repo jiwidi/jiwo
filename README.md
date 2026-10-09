@@ -142,6 +142,7 @@ The server reads its settings from the environment.
 | `JIWO_BATCH_TOKENS` | The most padded tokens in one forward pass. It does not change the answers. | `262144` on CUDA, `16384` on CPU and MPS |
 | `JIWO_MAX_BODY_BYTES` | The largest request body in bytes | `2000000` |
 | `JIWO_CUDNN_ATTENTION` | `0` switches off the cuDNN attention kernel. Some Gemma 4 models need this. | on |
+| `JIWO_CUDA_GRAPHS` | `1` captures CUDA graphs at start-up and replays them, which makes a request faster on a GPU, most of all for small models. The capture takes a few minutes. If it fails, the server runs eagerly. | off |
 | `JIWO_HOST`, `PORT` | The address of the server | `127.0.0.1`, `8765` |
 
 The server answers one request at a time. After a GPU out-of-memory error, it tries again with smaller batches. A CPU

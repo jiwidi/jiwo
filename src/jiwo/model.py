@@ -16,7 +16,7 @@ import string
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Self, cast
+from typing import TYPE_CHECKING, Any, Self, cast
 
 import torch
 from safetensors.torch import load_file
@@ -26,9 +26,21 @@ from jiwo.inference import MAX_LENGTH, decide
 from jiwo.prompting import DisplayOrder, PromptItem, decision_messages
 from jiwo.schema import Content, DecisionResponse, JSONValue
 
+if TYPE_CHECKING:
+    from jiwo.graphs import GraphRunner
+
 MAX_CODES = 255
 FORMAT_VERSION = 1
 MASK_VALUE = -1e9  # finite, so arithmetic on the logits of unused codes stays finite
+
+
+def mask_codes(logits: torch.Tensor, counts: Sequence[int]) -> torch.Tensor:
+    """Give the codes after each row's own option count no probability."""
+    positions = torch.arange(logits.shape[1], device=logits.device)[None, :]
+    limits = torch.tensor(list(counts), device=logits.device)[:, None]
+    return logits.masked_fill(positions >= limits, MASK_VALUE)
+
+
 CONFIG_FILE = "decision_config.json"
 READOUT_FILE = "readout.safetensors"
 ADAPTER_CONFIG_FILE = "adapter_config.json"  # written by peft for a LoRA checkpoint
@@ -187,6 +199,7 @@ class DecisionModel(torch.nn.Module):
         self.config = config
         self.device_name = device
         self.repository_name: str | None = None  # set by from_pretrained for a Hugging Face repository id
+        self.graphs: GraphRunner | None = None  # set by jiwo.graphs.GraphRunner.attach for serving
         self.tokenizer.padding_side = "right"
         if self.tokenizer.pad_token_id is None:
             raise ValueError("The tokenizer has no padding token. Use the tokenizer files of a jiwo checkpoint.")
@@ -258,63 +271,95 @@ class DecisionModel(torch.nn.Module):
     def prompt_text(self, item: PromptItem) -> str:
         return chat_text(self.tokenizer, decision_messages(item.state, item.question, self.codes, item.order))
 
-    def encode(self, items: Sequence[PromptItem], max_length: int = MAX_LENGTH) -> Batch:
-        """Tokenize the prompts with right padding. Raise PromptTooLongError if a prompt is too long."""
+    def token_ids(self, items: Sequence[PromptItem], max_length: int = MAX_LENGTH) -> list[list[int]]:
+        """The prompt tokens of each item. Each prompt is rendered and tokenized once. Nothing is truncated.
+
+        Raise PromptTooLongError if a prompt is too long.
+        """
         if not items:
             raise ValueError("A batch needs at least one item.")
-        counts = tuple(item.count for item in items)
-        if max(counts) > len(self.codes):
-            raise ValueError(f"A question has {max(counts)} options but the model has {len(self.codes)} codes.")
-        encoded = self.tokenizer(
-            [self.prompt_text(item) for item in items], return_tensors="pt", padding=True, add_special_tokens=False
-        )
-        lengths = encoded["attention_mask"].sum(dim=1)
-        if int(lengths.max()) > max_length:
+        most = max(item.count for item in items)
+        if most > len(self.codes):
+            raise ValueError(f"A question has {most} options but the model has {len(self.codes)} codes.")
+        ids: list[list[int]] = self.tokenizer([self.prompt_text(item) for item in items], add_special_tokens=False)[
+            "input_ids"
+        ]
+        longest = max(len(row) for row in ids)
+        if longest > max_length:
             raise PromptTooLongError(
-                f"A prompt has {int(lengths.max())} tokens, more than the maximum context length of {max_length} tokens."
+                f"A prompt has {longest} tokens, more than the maximum context length of {max_length} tokens."
             )
+        return ids
+
+    def pad(self, ids: Sequence[Sequence[int]], counts: Sequence[int]) -> Batch:
+        """Right-pad token rows into one batch with an attention mask."""
+        width = max(len(row) for row in ids)
+        input_ids = torch.full((len(ids), width), int(self.tokenizer.pad_token_id), dtype=torch.long)
+        attention_mask = torch.zeros((len(ids), width), dtype=torch.long)
+        for index, row in enumerate(ids):
+            input_ids[index, : len(row)] = torch.tensor(row, dtype=torch.long)
+            attention_mask[index, : len(row)] = 1
+        lengths = attention_mask.sum(dim=1)
         return Batch(
-            input_ids=encoded["input_ids"].to(self.device_name),
-            attention_mask=encoded["attention_mask"].to(self.device_name),
+            input_ids=input_ids.to(self.device_name),
+            attention_mask=attention_mask.to(self.device_name),
             last_index=(lengths - 1).to(self.device_name),
-            counts=counts,
+            counts=tuple(counts),
             input_tokens=int(lengths.sum()),
         )
+
+    def encode(self, items: Sequence[PromptItem], max_length: int = MAX_LENGTH) -> Batch:
+        """Tokenize the prompts with right padding. Raise PromptTooLongError if a prompt is too long."""
+        return self.pad(self.token_ids(items, max_length), [item.count for item in items])
 
     def readout_logits(self, hidden: torch.Tensor) -> torch.Tensor:
         """The fp32 logits of all answer codes for the hidden states of the last real tokens."""
         return cast(torch.Tensor, self.readout(hidden)).float()
 
-    def forward(self, batch: Batch) -> torch.Tensor:
-        hidden = self.backbone(
-            input_ids=batch.input_ids, attention_mask=batch.attention_mask, use_cache=False
-        ).last_hidden_state
+    def last_logits(
+        self, input_ids: torch.Tensor, attention_mask: torch.Tensor | None, last: torch.Tensor
+    ) -> torch.Tensor:
+        """Unmasked readout logits at the last real token of each row.
+
+        A right-padded batch needs no attention mask: every layer is causal, so the padding after a row's last token
+        cannot change it. The CUDA-graph path (jiwo.graphs) uses this.
+        """
+        hidden = self.backbone(input_ids=input_ids, attention_mask=attention_mask, use_cache=False).last_hidden_state
         rows = torch.arange(hidden.shape[0], device=hidden.device)
-        logits = self.readout_logits(hidden[rows, batch.last_index])
-        positions = torch.arange(logits.shape[1], device=logits.device)[None, :]
-        limits = torch.tensor(batch.counts, device=logits.device)[:, None]
-        return logits.masked_fill(positions >= limits, MASK_VALUE)
+        return self.readout_logits(hidden[rows, last])
+
+    def forward(self, batch: Batch) -> torch.Tensor:
+        return mask_codes(self.last_logits(batch.input_ids, batch.attention_mask, batch.last_index), batch.counts)
 
     @torch.inference_mode()
     def predict_logits(
-        self, items: Sequence[PromptItem], batch_size: int = 16, max_length: int = MAX_LENGTH
+        self,
+        items: Sequence[PromptItem],
+        batch_size: int = 16,
+        max_length: int = MAX_LENGTH,
+        ids: Sequence[Sequence[int]] | None = None,
     ) -> list[list[float]]:
         """Raw logits per item in DISPLAY order, only the item's own codes. The result keeps the input order.
 
         Batches take the items longest first, so each batch pads to rows of a similar length. Right padding and
-        the gather at the last real token make a row's logits independent of its batch.
+        the gather at the last real token make a row's logits independent of its batch. `ids` are the items'
+        token_ids when the caller has them already. With `graphs` set, a batch whose shape has a captured CUDA
+        graph replays it, and any other batch runs eagerly.
         """
+        ids = ids if ids is not None else self.token_ids(items, max_length)
         was_training = self.training
         self.eval()
-        order = sorted(range(len(items)), key=lambda index: len(self.prompt_text(items[index])), reverse=True)
+        order = sorted(range(len(items)), key=lambda index: len(ids[index]), reverse=True)
         result: list[list[float]] = [[] for _ in items]
         try:
             for start in range(0, len(order), batch_size):
                 indices = order[start : start + batch_size]
-                chunk = [items[index] for index in indices]
-                logits = self(self.encode(chunk, max_length)).cpu()
-                for index, row, item in zip(indices, logits, chunk, strict=True):
-                    result[index] = cast(list[float], row[: item.count].tolist())
+                chunk_ids = [ids[index] for index in indices]
+                counts = [items[index].count for index in indices]
+                raw = self.graphs.logits(chunk_ids) if self.graphs is not None else None
+                logits = (self(self.pad(chunk_ids, counts)) if raw is None else mask_codes(raw, counts)).cpu()
+                for index, row, count in zip(indices, logits, counts, strict=True):
+                    result[index] = cast(list[float], row[:count].tolist())
         finally:
             self.train(was_training)
         return result
@@ -325,6 +370,7 @@ class DecisionModel(torch.nn.Module):
         batch_size: int = 16,
         temperature: float | None = None,
         max_length: int = MAX_LENGTH,
+        ids: Sequence[Sequence[int]] | None = None,
     ) -> list[list[float]]:
         """Probabilities per item in CANONICAL option order (option_keys), after the temperature.
 
@@ -333,7 +379,7 @@ class DecisionModel(torch.nn.Module):
         if temperature is not None and (not math.isfinite(temperature) or temperature <= 0):
             raise ValueError("The temperature must be positive and finite.")
         result: list[list[float]] = []
-        for item, logits in zip(items, self.predict_logits(items, batch_size, max_length), strict=True):
+        for item, logits in zip(items, self.predict_logits(items, batch_size, max_length, ids), strict=True):
             scale = temperature if temperature is not None else self.config.temperature_for(item.question["type"])
             probabilities = torch.softmax(torch.tensor(logits, dtype=torch.float64) / scale, dim=0).tolist()
             order = item.order or DisplayOrder.identity(item.count)

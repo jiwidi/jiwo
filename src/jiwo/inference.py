@@ -49,14 +49,18 @@ def check_option_limit(model: DecisionModel, request: DecisionRequest) -> None:
 
 
 def predict_with_backoff(
-    model: DecisionModel, items: list[PromptItem], batch_size: int, max_length: int
+    model: DecisionModel,
+    items: list[PromptItem],
+    batch_size: int,
+    max_length: int,
+    ids: list[list[int]] | None = None,
 ) -> list[list[float]]:
     """Predict. After a CUDA out-of-memory error, free the memory and retry with half the batch size."""
     size = batch_size
     while True:
         out_of_memory = False
         try:
-            return model.predict_proba(items, batch_size=size, max_length=max_length)
+            return model.predict_proba(items, batch_size=size, max_length=max_length, ids=ids)
         except torch.OutOfMemoryError:
             out_of_memory = True
         if out_of_memory:  # outside the except block, so the traceback no longer holds the tensors
@@ -89,10 +93,11 @@ def decide(
     check_option_limit(model, request)
     names = list(request["questions"])
     items = [PromptItem(request["state"], request["questions"][key]) for key in names]
-    batch = model.encode(items, max_length)  # checks the lengths before any compute
-    batch_size = max(1, min(len(items), batch_tokens // int(batch.input_ids.shape[1])))
-    probabilities = predict_with_backoff(model, items, batch_size, max_length)
+    ids = model.token_ids(items, max_length)  # checks the lengths before any compute
+    batch_size = max(1, min(len(items), batch_tokens // max(len(row) for row in ids)))
+    probabilities = predict_with_backoff(model, items, batch_size, max_length, ids)
     answers = {
         key: build_answer(request["questions"][key], values) for key, values in zip(names, probabilities, strict=True)
     }
-    return {"model": name, "answers": answers, "usage": {"input_tokens": batch.input_tokens, "output_tokens": 0}}
+    tokens = sum(len(row) for row in ids)
+    return {"model": name, "answers": answers, "usage": {"input_tokens": tokens, "output_tokens": 0}}

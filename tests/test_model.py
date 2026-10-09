@@ -121,3 +121,68 @@ def test_checkpoint_directory_refuses_a_missing_path(tmp_path: Path) -> None:
 def test_unsupported_checkpoint_format_is_refused() -> None:
     with pytest.raises(ValueError, match="Unsupported checkpoint format"):
         model_module.DecisionConfig.from_json({"format_version": 99})
+
+
+def test_token_ids_and_pad_match_a_padded_tokenizer_batch(model: DecisionModel) -> None:
+    for items in (
+        [PromptItem("short", QUESTION)],
+        [PromptItem("short", QUESTION), PromptItem("a much longer state " * 20, QUESTION)],
+    ):
+        texts = [model.prompt_text(item) for item in items]
+        expected = model.tokenizer(texts, return_tensors="pt", padding=True, add_special_tokens=False)
+        padded = model.pad(model.token_ids(items), [item.count for item in items])
+        assert torch.equal(expected["input_ids"], padded.input_ids.cpu())
+        assert torch.equal(expected["attention_mask"], padded.attention_mask.cpu())
+        assert padded.input_tokens == int(expected["attention_mask"].sum())
+
+
+def test_right_padding_without_attention_mask_keeps_the_last_token(model: DecisionModel) -> None:
+    """The CUDA-graph path drops the attention mask. Causal layers make the right padding harmless."""
+    items = [PromptItem("short", QUESTION), PromptItem("a much longer state " * 20, QUESTION)]
+    batch = model.encode(items)
+    with torch.no_grad():
+        masked = model.last_logits(batch.input_ids, batch.attention_mask, batch.last_index)
+        unmasked = model.last_logits(batch.input_ids, None, batch.last_index)
+    assert torch.allclose(masked, unmasked, atol=1e-5)
+
+
+class EagerGraph:
+    """Stands in for torch.cuda.CUDAGraph on CPU: replay() runs the forward on the static tensors."""
+
+    def __init__(self, model: DecisionModel, ids: torch.Tensor, last: torch.Tensor, out: torch.Tensor) -> None:
+        self.model, self.ids, self.last, self.out = model, ids, last, out
+
+    def replay(self) -> None:
+        self.out.copy_(self.model.last_logits(self.ids, None, self.last))
+
+
+def test_graph_runner_pads_rows_into_buckets(model: DecisionModel) -> None:
+    from jiwo.graphs import GraphRunner
+
+    runner = object.__new__(GraphRunner)
+    runner.model, runner.lengths, runner.replays = model, [64, 128, 512], 0
+    runner.widths = {64: [1, 2], 128: [1, 2], 512: [1, 2]}
+    runner.graphs = {}
+    for rows, length in [(b, t) for t in runner.lengths for b in (1, 2)]:
+        ids = torch.zeros((rows, length), dtype=torch.long)
+        last, out = torch.zeros(rows, dtype=torch.long), torch.zeros((rows, len(model.codes)))
+        runner.graphs[(rows, length)] = (ids, last, out, EagerGraph(model, ids, last, out))  # type: ignore[assignment]
+    items = [PromptItem(state, QUESTION) for state in ["s", "medium state " * 5, "a much longer state " * 12]]
+    eager = model.predict_logits(items, batch_size=3)
+    model.graphs = runner
+    try:
+        replayed = model.predict_logits(items, batch_size=2)  # batches of 2 rows and 1 row: two replays
+        assert runner.replays == 2
+        assert runner.logits([[1] * 600]) is None  # longer than the last bucket: the caller runs it eagerly
+        assert runner.logits([[1] * 10] * 3) is None  # wider than the widest graph: the caller runs it eagerly
+    finally:
+        model.graphs = None
+    for left, right in zip(replayed, eager, strict=True):
+        assert left == pytest.approx(right, abs=1e-5)
+
+
+def test_graph_runner_needs_a_cuda_device(model: DecisionModel) -> None:
+    from jiwo.graphs import GraphRunner
+
+    with pytest.raises(ValueError, match="CUDA"):
+        GraphRunner(model)

@@ -10,6 +10,9 @@ Settings (environment):
 - JIWO_BATCH_TOKENS: the most padded tokens in one forward pass (default 262144 on CUDA, 16384 on CPU and MPS).
   A request with many long questions runs in several batches. The answers do not change.
 - JIWO_CUDNN_ATTENTION: "0" switches off the cuDNN attention kernel (default on). Some Gemma 4 models need this.
+- JIWO_CUDA_GRAPHS: "1" captures CUDA graphs for fixed (rows, length) shapes at start-up and replays them for each
+  request (jiwo.graphs). This makes a request faster on a GPU, most of all for small models. Batches outside the captured shapes run
+  eagerly. The capture takes a few minutes. If it fails, the server logs the error and runs eagerly. Default off.
 - JIWO_MODEL_NAME: the model name in responses, for example jiwo-0.8b (default: the checkpoint's metadata name,
   else the name of the Hugging Face repository, else "jiwo").
 - JIWO_HOST and PORT: the address of the server (default 127.0.0.1 and 8765).
@@ -20,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -30,11 +34,13 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from jiwo import __version__
+from jiwo.graphs import GraphRunner
 from jiwo.inference import BATCH_TOKENS, MAX_LENGTH, CapacityError, decide, default_batch_tokens
 from jiwo.model import DecisionModel, PromptTooLongError
 from jiwo.schema import SchemaError
 
 MAX_BODY_BYTES = 2_000_000
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -82,6 +88,12 @@ def load(checkpoint: str | None = None, device: str | None = None) -> None:
     if os.environ.get("JIWO_CUDNN_ATTENTION", "1") == "0":
         torch.backends.cuda.enable_cudnn_sdp(False)
     service.model = DecisionModel.from_pretrained(path, device=device or os.environ.get("JIWO_DEVICE"))
+    if os.environ.get("JIWO_CUDA_GRAPHS") == "1":
+        try:
+            GraphRunner(service.model).attach().capture()
+        except Exception:  # serve eagerly rather than not at all
+            service.model.graphs = None
+            log.exception("The CUDA graph capture failed. The server runs eagerly.")
     service.lock = asyncio.Lock()
     service.name = os.environ.get("JIWO_MODEL_NAME") or service.model.model_name
 
@@ -144,6 +156,7 @@ async def systemone(request: Request, authorization: str | None = Header(default
 def main() -> None:
     import uvicorn
 
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     load()
     uvicorn.run(app, host=os.environ.get("JIWO_HOST", "127.0.0.1"), port=int_setting("PORT", 8765))
 
