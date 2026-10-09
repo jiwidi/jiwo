@@ -13,16 +13,20 @@ board. Its Full score combines the public benchmarks (20%) with private tests th
 
 | Model | Base | Parameters | Version | Decision Index 0.3 | Board rank in its class | Licence |
 |---|---|---:|---|---|---|---|
-| [jiwo-0.8b](https://huggingface.co/eljiwo/jiwo-0.8b) | [Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B) | 0.75B | v1 | **Full 24.32** (public 28.72) | **1st of 27** under 1B | Apache-2.0 |
+| [jiwo-0.8b](https://huggingface.co/eljiwo/jiwo-0.8b) | [Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B) | 0.75B | v2 | public **29.37**, Full pending | v1: **1st of 27** under 1B (Full 24.32) | Apache-2.0 |
 | [jiwo-4b](https://huggingface.co/eljiwo/jiwo-4b) | [Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B) | 4.2B | v2 | public **46.06**, Full pending | v1: 3rd of 26 in 3–6B (Full 42.86) | Apache-2.0 |
 
-The board ranks come from the board of 2026-10-07. jiwo-4b v2 (2026-10-09) uses the same recipe as v1 with a larger
-and more varied training mix. It scores 46.06 on the public part of 0.3 (v1: 45.76), and 67.8% on three public
-datasets that no version trained on (v1: 66.3%). Load v1 with `revision="v1"`, for example
-`DecisionModel.from_pretrained("eljiwo/jiwo-4b", revision="v1")`.
+The board ranks come from the board of 2026-10-07. Both v2 models (2026-10-09) use the same recipe as v1 with a
+larger and more varied training mix. On the public part of 0.3, jiwo-0.8b v2 scores 29.37 (v1: 28.72) and jiwo-4b v2
+scores 46.06 (v1: 45.76). On three public datasets that no version trained on, jiwo-0.8b goes from 54.6% to 61.5% and
+jiwo-4b from 66.3% to 67.8%. Load v1 with `revision="v1"`, for example
+`DecisionModel.from_pretrained("eljiwo/jiwo-0.8b", revision="v1")`.
 
-Against the untrained base model on Decision Index 0.2.1, with the same server and calibration: jiwo-0.8b scores
-28.00 (Qwen3.5-0.8B: 6.99) and jiwo-4b v2 scores 45.08 (Qwen3.5-4B: 29.20).
+Against the untrained base model on Decision Index 0.2.1, with the same server and calibration: jiwo-0.8b v2 scores
+28.52 (Qwen3.5-0.8B: 6.99) and jiwo-4b v2 scores 45.08 (Qwen3.5-4B: 29.20).
+
+On a GPU, serve with `JIWO_CUDA_GRAPHS=1` (see [Settings](#settings)). On one RTX PRO 6000, the median request takes
+14.5 ms for jiwo-0.8b (40.4 ms without graphs) and 31.6 ms for jiwo-4b (34.5 ms).
 
 The training data is mostly English. Other languages are not evaluated.
 
